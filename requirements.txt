@@ -6,3 +6,4 @@ docx
 exceptions
 groq
 python-dotenv
+streamlit
