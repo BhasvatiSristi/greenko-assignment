@@ -1,618 +1,282 @@
-from __future__ import annotations
-
 import os
-import sys
-import re
-from pathlib import Path
-
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.agents import create_agent
+
+from part_a.tools import ALL_TOOLS
 
 
-# ============================================================
-# PATH SETUP
-# ============================================================
+# =========================================================
+# Environment
+# =========================================================
 
-ROOT = Path(__file__).resolve().parents[1]
-PART_A_ROOT = Path(__file__).resolve().parent
-
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-if str(PART_A_ROOT) not in sys.path:
-    sys.path.insert(0, str(PART_A_ROOT))
+if not os.getenv("GROQ_API_KEY"):
+    raise EnvironmentError(
+        "GROQ_API_KEY is not set. "
+        "Add it to your environment or .env file."
+    )
 
 
-# ============================================================
-# IMPORT TOOLS
-# ============================================================
-
-from part_a.tools.langchain_tools import (
-    compare_output_on_high_dam_price,
-    compare_weekly_capacity_factor,
-    get_dam_summary,
-    get_turbine_capacity_factor,
-    get_turbine_summary,
-    lookup_compliance_rule,
-)
-
-
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
-load_dotenv(ROOT / ".env")
-
-
-# ============================================================
-# MODEL
-# ============================================================
+# =========================================================
+# Main LLM
+# =========================================================
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    temperature=0,
+    model="llama-3.1-8b-instant",
+    temperature=0
 )
 
 
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
+# =========================================================
+# Agent Instructions
+# =========================================================
 
 SYSTEM_PROMPT = """
-You are an AI operations assistant for a renewable-energy
-Power-to-X facility.
+You are the Greenko Renewable Energy Operations Agent.
 
-You answer operational questions using supplied:
+You answer questions about the supplied renewable-energy
+telemetry, DAM prices and RFNBO compliance rulebook.
 
-- turbine telemetry data
-- DAM electricity price data
-- deterministic calculations
-- RFNBO compliance rulebook information
+You have access to three categories of tools:
 
-IMPORTANT:
+1. Structured Data Query
+   - Use query_data for turbine telemetry and DAM price questions.
+   - This tool queries the SQLite database.
 
-The numerical results provided to you come from deterministic
-Python tools operating on the supplied dataset.
+2. Deterministic Calculators
+   - Use calculator tools for formulas and numerical calculations.
+   - Never perform important numerical calculations mentally when
+     a calculator tool is available.
 
-Do not invent numerical values.
+3. Compliance Rulebook
+   - Use lookup_rulebook for questions about compliance requirements,
+     temporal correlation, hourly matching, electrolyzer requirements,
+     and other rulebook content.
 
-Do not invent compliance requirements.
+---------------------------------------------------------
+IMPORTANT TOOL USAGE
+---------------------------------------------------------
 
-Do not add facts that are not supported by the tool output.
+Do NOT use keyword-based assumptions.
 
-If the tool output says that information is unavailable,
-clearly state that limitation.
+Understand the user's actual intent.
 
-For compliance questions, rely only on the supplied
-compliance rulebook.
+For example:
 
-For numerical questions, rely only on the supplied
-dataset/tool output.
+"What is the power output for all turbines together?"
 
-Give concise answers and briefly explain the evidence
-supporting the answer.
+means fleet-level total power.
+
+Do NOT ask for a turbine ID.
+
+Use query_data.
+
+"What is the average power output of T01?"
+
+Use query_data.
+
+"What is the capacity factor of T01?"
+
+First use query_data to obtain the average power of T01.
+
+Then use calculate_capacity_factor.
+
+"Compare the capacity factor of T01 and T05."
+
+Obtain the average power for both turbines using query_data,
+calculate both capacity factors, then compare them.
+
+"What is the average DAM price?"
+
+Use query_data.
+
+"What was T01's power output on April 1st 2026?"
+
+Use query_data and respect the requested date.
+
+Do NOT silently substitute an overall average.
+
+"According to the rulebook, what is temporal correlation?"
+
+Use lookup_rulebook.
+
+---------------------------------------------------------
+MULTI-TOOL QUESTIONS
+---------------------------------------------------------
+
+A question may require multiple tools.
+
+Use them sequentially when necessary.
+
+Example:
+
+"What is the capacity factor of T05?"
+
+query_data
+    ↓
+average power
+    ↓
+calculate_capacity_factor
+    ↓
+final answer
+
+---------------------------------------------------------
+DATA GROUNDING
+---------------------------------------------------------
+
+Never invent:
+
+- turbine values
+- DAM prices
+- timestamps
+- compliance rules
+- calculations
+
+If the database does not contain the requested observation,
+say that the requested data is unavailable.
+
+If the rulebook does not specify something, say so.
+
+---------------------------------------------------------
+SCOPE
+---------------------------------------------------------
+
+This agent is specifically for the Greenko renewable-energy
+operational dataset and compliance rulebook.
+
+If the user asks an unrelated question such as:
+
+"Who won the FIFA World Cup?"
+
+say that the question is outside the scope of the supplied
+Greenko operational data and compliance sources.
+
+---------------------------------------------------------
+ANSWER STYLE
+---------------------------------------------------------
+
+Keep answers concise but useful.
+
+When a numerical result is available, provide the number and
+appropriate unit.
+
+For example:
+
+"The average power output of T01 is 428.08 kW."
+
+Do not unnecessarily expose internal tool calls or SQL unless
+the user explicitly asks for them.
+
+If useful, briefly explain how the result was obtained.
 """
 
 
-# ============================================================
-# HELPER — CHECK PHRASES
-# ============================================================
+# =========================================================
+# Create Agent
+# =========================================================
 
-def _contains_any(
-    question: str,
-    phrases: list[str]
-) -> bool:
+agent = create_agent(
+    model=llm,
+    tools=ALL_TOOLS,
+    system_prompt=SYSTEM_PROMPT
+)
 
-    lowered = question.lower()
 
-    return any(
-        phrase.lower() in lowered
-        for phrase in phrases
-    )
+# =========================================================
+# Ask Agent
+# =========================================================
 
-
-# ============================================================
-# HELPER — EXTRACT TURBINE ID
-# ============================================================
-
-def _extract_turbine_id(
-    question: str
-) -> str | None:
-
-    match = re.search(
-        r"\bT0[1-5]\b",
-        question.upper()
-    )
-
-    if match:
-        return match.group(0)
-
-    return None
-
-
-# ============================================================
-# HELPER — EXTRACT DAM THRESHOLD
-# ============================================================
-
-def _extract_threshold(
-    question: str
-) -> float:
-
-    # Handles:
-    # > ₹4
-    # > 4
-    # exceeded ₹4
-    # above ₹4
-    # greater than ₹4
-
-    patterns = [
-        r">\s*₹?\s*([0-9]+(?:\.[0-9]+)?)",
-
-        r"(?:exceeded|above|greater than|higher than)"
-        r"\s*₹?\s*([0-9]+(?:\.[0-9]+)?)",
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            question.lower()
-        )
-
-        if match:
-            return float(match.group(1))
-
-    # Assignment example uses ₹4/kWh
-    return 4.0
-
-
-# ============================================================
-# ROUTER
-# ============================================================
-
-def _route_question(question: str):
-
-    lowered = question.lower().strip()
-
-
-    # --------------------------------------------------------
-    # EMPTY QUESTION
-    # --------------------------------------------------------
-
-    if not lowered:
-
-        return (
-            None,
-            "Please ask a non-empty question."
-        )
-
-
-    # --------------------------------------------------------
-    # 1. COMPLIANCE / RULEBOOK
-    # --------------------------------------------------------
-
-    if _contains_any(
-        lowered,
-        [
-            "temporal correlation",
-            "hourly matching",
-            "monthly averaging",
-            "electrolyzer",
-            "rfnbo",
-            "compliance",
-            "rulebook",
-        ],
-    ):
-
-        return (
-            lambda: lookup_compliance_rule.invoke(
-                {
-                    "query": question
-                }
-            ),
-            "lookup_compliance_rule",
-        )
-
-
-    # --------------------------------------------------------
-    # 2. AVERAGE DAM PRICE
-    #
-    # IMPORTANT:
-    # This must come BEFORE generic "dam price"
-    # matching.
-    # --------------------------------------------------------
-
-    if _contains_any(
-        lowered,
-        [
-            "average dam price",
-            "average price",
-            "dam summary",
-            "dam price average",
-        ],
-    ):
-
-        return (
-            lambda: get_dam_summary.invoke({}),
-            "get_dam_summary",
-        )
-
-
-    # --------------------------------------------------------
-    # 3. DAM THRESHOLD / HIGH PRICE ANALYSIS
-    # --------------------------------------------------------
-
-    if (
-        "dam" in lowered
-        and _contains_any(
-            lowered,
-            [
-                "exceeded",
-                "above",
-                "greater than",
-                "higher than",
-                "threshold",
-            ],
-        )
-    ):
-
-        threshold = _extract_threshold(
-            lowered
-        )
-
-        return (
-            lambda: compare_output_on_high_dam_price.invoke(
-                {
-                    "threshold": threshold
-                }
-            ),
-            "compare_output_on_high_dam_price",
-        )
-
-
-    # --------------------------------------------------------
-    # 4. WEEKLY CAPACITY FACTOR COMPARISON
-    # --------------------------------------------------------
-
-    if _contains_any(
-        lowered,
-        [
-            "week 1",
-            "week one",
-            "second week",
-            "first week",
-            "compare the first and second week",
-            "first and second week",
-        ],
-    ):
-
-        return (
-            lambda: compare_weekly_capacity_factor.invoke(
-                {}
-            ),
-            "compare_weekly_capacity_factor",
-        )
-
-
-    # --------------------------------------------------------
-    # 5. EXTRACT TURBINE ID
-    # --------------------------------------------------------
-
-    turbine_id = _extract_turbine_id(
-        lowered
-    )
-
-
-    # --------------------------------------------------------
-    # 6. TURBINE CAPACITY FACTOR
-    # --------------------------------------------------------
-
-    if (
-        turbine_id
-        and "capacity factor" in lowered
-    ):
-
-        return (
-            lambda: get_turbine_capacity_factor.invoke(
-                {
-                    "turbine_id": turbine_id
-                }
-            ),
-            "get_turbine_capacity_factor",
-        )
-
-
-    # --------------------------------------------------------
-    # 7. TURBINE POWER / SUMMARY
-    # --------------------------------------------------------
-
-    if (
-        turbine_id
-        and _contains_any(
-            lowered,
-            [
-                "average power",
-                "power output",
-                "summary",
-                "wind speed",
-                "availability",
-                "maximum power",
-                "minimum power",
-            ],
-        )
-    ):
-
-        return (
-            lambda: get_turbine_summary.invoke(
-                {
-                    "turbine_id": turbine_id
-                }
-            ),
-            "get_turbine_summary",
-        )
-
-
-    # --------------------------------------------------------
-    # 8. CAPACITY FACTOR WITHOUT TURBINE
-    # --------------------------------------------------------
-
-    if "capacity factor" in lowered:
-
-        return (
-            None,
-            "Please specify a turbine ID such as T01, T02, "
-            "T03, T04, or T05."
-        )
-
-
-    # --------------------------------------------------------
-    # 9. POWER OUTPUT WITHOUT TURBINE
-    # --------------------------------------------------------
-
-    if _contains_any(
-        lowered,
-        [
-            "average power",
-            "power output",
-        ],
-    ):
-
-        return (
-            None,
-            "Please specify a turbine ID such as T01-T05."
-        )
-
-
-    # --------------------------------------------------------
-    # 10. UNKNOWN QUESTION
-    # --------------------------------------------------------
-
-    return (
-        None,
-        "I could not map that question to the supplied "
-        "telemetry, DAM, or rulebook tools."
-    )
-
-
-# ============================================================
-# LLM ANSWER SYNTHESIS
-# ============================================================
-
-def _synthesize_answer(
-    question: str,
-    tool_output: str,
-    tool_name: str | None = None,
-) -> str:
-
-    # If Groq isn't configured, return the deterministic
-    # tool result directly.
-
-    if not os.getenv("GROQ_API_KEY"):
-
-        return tool_output.strip()
-
-
-    tool_context = ""
-
-    if tool_name:
-
-        tool_context = (
-            f"\nTool used: {tool_name}\n"
-        )
-
-
-    messages = [
-
-        SystemMessage(
-            content=(
-                SYSTEM_PROMPT
-                + tool_context
-                + """
-Return only the final answer to the user's question.
-
-Do not describe what you should have done.
-
-Do not say that you failed to use a tool.
-
-The tool output already contains the evidence required
-to answer the question.
-
-If the tool output does not contain enough information,
-say so explicitly.
-"""
-            )
-        ),
-
-        HumanMessage(
-            content=(
-                f"User question:\n{question}\n\n"
-                f"Tool output:\n{tool_output}"
-            )
-        ),
-    ]
-
+def ask_agent(question: str) -> str:
 
     try:
 
-        response = llm.invoke(
-            messages
-        )
+        result = agent.invoke({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ]
+        })
 
-        content = getattr(
-            response,
-            "content",
-            ""
-        )
+        messages = result.get("messages", [])
 
-        if content:
+        if not messages:
+            return "I could not generate an answer."
 
-            return content.strip()
+        # The final message should contain the agent's response.
+        final_message = messages[-1]
 
+        content = final_message.content
 
-    except Exception:
+        if isinstance(content, str):
+            return content
 
-        # Graceful fallback:
-        # return deterministic tool output if
-        # LLM synthesis fails.
+        # Handle structured content if returned
+        if isinstance(content, list):
 
-        pass
+            text_parts = []
 
+            for item in content:
 
-    return tool_output.strip()
+                if isinstance(item, dict):
 
+                    if item.get("type") == "text":
+                        text_parts.append(
+                            item.get("text", "")
+                        )
 
-# ============================================================
-# MAIN AGENT FUNCTION
-# ============================================================
+            if text_parts:
+                return "\n".join(text_parts)
 
-def ask_agent(
-    question: str,
-    use_llm: bool = True
-):
-
-    tool_function, tool_name_or_error = (
-        _route_question(question)
-    )
-
-
-    # --------------------------------------------------------
-    # Routing error
-    # --------------------------------------------------------
-
-    if tool_function is None:
-
-        return tool_name_or_error
-
-
-    tool_name = tool_name_or_error
-
-
-    # --------------------------------------------------------
-    # Execute deterministic tool
-    # --------------------------------------------------------
-
-    try:
-
-        tool_output = tool_function()
+        return str(content)
 
     except Exception as e:
 
         return (
-            "I encountered an error while retrieving "
-            f"the required data: {e}"
+            "I encountered an error while processing the question. "
+            f"Please try again.\n\nDetails: {str(e)}"
         )
 
 
-    # --------------------------------------------------------
-    # No LLM mode
-    # --------------------------------------------------------
+# =========================================================
+# Interactive CLI
+# =========================================================
 
-    if not use_llm:
-
-        return tool_output
-
-
-    # --------------------------------------------------------
-    # LLM synthesis
-    # --------------------------------------------------------
-
-    return _synthesize_answer(
-        question,
-        tool_output,
-        tool_name,
-    )
-
-
-# ============================================================
-# INTERACTIVE CLI
-# ============================================================
-
-if __name__ == "__main__":
+def main():
 
     print("=" * 60)
     print("Greenko Renewable Energy Agent")
     print("Type 'exit' or 'quit' to stop.")
     print("=" * 60)
 
-
     while True:
 
-        question = input(
-            "\nYou: "
-        ).strip()
+        try:
+            question = input("\nYou: ").strip()
 
+        except (KeyboardInterrupt, EOFError):
 
-        # ----------------------------------------------------
-        # EXIT
-        # ----------------------------------------------------
-
-        if question.lower() in [
-            "exit",
-            "quit",
-        ]:
-
-            print(
-                "\nAgent: Goodbye!"
-            )
-
+            print("\nGoodbye!")
             break
 
-
-        # ----------------------------------------------------
-        # EMPTY INPUT
-        # ----------------------------------------------------
-
         if not question:
-
             continue
 
+        if question.lower() in {"exit", "quit"}:
 
-        # ----------------------------------------------------
-        # PROCESS QUESTION
-        # ----------------------------------------------------
+            print("Goodbye!")
+            break
 
-        try:
+        print("\nAgent:")
 
-            answer = ask_agent(
-                question
-            )
+        answer = ask_agent(question)
 
-            print(
-                "\nAgent:"
-            )
-
-            print(
-                answer
-            )
+        print(answer)
 
 
-        except Exception as e:
-
-            print(
-                "\nAgent Error:"
-            )
-
-            print(
-                e
-            )
+if __name__ == "__main__":
+    main()

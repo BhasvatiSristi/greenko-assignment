@@ -7,3 +7,7 @@ exceptions
 groq
 python-dotenv
 streamlit
+
+langchain 
+langchain-groq 
+python-docx
