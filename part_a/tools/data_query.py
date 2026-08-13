@@ -73,6 +73,31 @@ def get_database_schema():
 
     return "\n\n".join(schema_parts)
 
+def clean_sql(sql: str) -> str:
+    """Remove markdown code fences accidentally added by the LLM."""
+    
+    sql = sql.strip()
+
+    sql = re.sub(
+        r"^```sql\s*",
+        "",
+        sql,
+        flags=re.IGNORECASE
+    )
+
+    sql = re.sub(
+        r"^```\s*",
+        "",
+        sql
+    )
+
+    sql = re.sub(
+        r"\s*```$",
+        "",
+        sql
+    )
+
+    return sql.strip()
 
 # ---------------------------------------------------------
 # Execute read-only SQL
@@ -81,28 +106,6 @@ def get_database_schema():
 def execute_sql(sql):
 
     sql_clean = sql.strip()
-
-    # Remove markdown code fences if the LLM added them
-    sql_clean = re.sub(
-        r"^```sql\s*",
-        "",
-        sql_clean,
-        flags=re.IGNORECASE
-    )
-
-    sql_clean = re.sub(
-        r"^```\s*",
-        "",
-        sql_clean
-    )
-
-    sql_clean = re.sub(
-        r"\s*```$",
-        "",
-        sql_clean
-    )
-
-    sql_clean = sql_clean.strip()
 
     # Only allow SELECT / WITH queries
     if not (
@@ -113,27 +116,6 @@ def execute_sql(sql):
             "Only read-only SELECT queries are allowed."
         )
 
-    # Extra safety check
-    forbidden = [
-        "insert ",
-        "update ",
-        "delete ",
-        "drop ",
-        "alter ",
-        "create ",
-        "replace ",
-        "truncate ",
-        "attach ",
-        "detach "
-    ]
-
-    sql_lower = sql_clean.lower()
-
-    for keyword in forbidden:
-        if keyword in sql_lower:
-            raise ValueError(
-                f"Forbidden SQL operation detected: {keyword.strip()}"
-            )
 
     conn = sqlite3.connect(
         f"file:{DB_PATH}?mode=ro",
@@ -220,29 +202,7 @@ Rules:
         "question": user_query
     })
 
-    sql = response.content.strip()
-
-    # Remove accidental markdown fences
-    sql = re.sub(
-        r"^```sql\s*",
-        "",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    sql = re.sub(
-        r"^```\s*",
-        "",
-        sql
-    )
-
-    sql = re.sub(
-        r"\s*```$",
-        "",
-        sql
-    )
-
-    return sql.strip()
+    return clean_sql(response.content)
 
 
 # ---------------------------------------------------------

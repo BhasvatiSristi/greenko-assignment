@@ -897,7 +897,26 @@ This separation makes it possible to distinguish between:
 
 ---
 
-# 21. What I Would Do With More Time
+## 21. What I Would Do With More Time
+
+### Part A — Agent
+
+1. **Reduce document-lookup latency**  
+   The current document lookup takes noticeable time to return an answer. I would explore faster approaches such as retrieving only the relevant rule sections instead of processing the full document for every question.
+
+2. **Improve tool performance and reliability**  
+   I would add more testing around tool selection, edge cases, and response latency to make the agent more reliable for a wider range of operational questions.
+
+### Part B — Forecasting
+
+3. **Compare more forecasting models**  
+   I would train at least two additional models and compare them with the current persistence baseline and Gradient Boosting model. I would then select the best-performing model based on the same walk-forward evaluation metrics.
+
+4. **Tune the selected model**  
+   After identifying the strongest model, I would tune its hyperparameters using time-aware validation rather than standard random cross-validation.
+
+5. **Add better forecasting inputs**  
+   I would explore additional useful features, such as weather forecasts, if they were available, since future wind conditions can provide information that historical generation alone cannot capture.
 
 There are several directions I would take if this were being developed beyond the take-home assignment.
 
