@@ -136,21 +136,29 @@ def submit_agent_question(question: str) -> None:
     try:
         with st.spinner("Thinking..."):
             answer = ask_agent(question)
-    except Exception:
-        answer = "The operations agent could not answer that question right now. Please try again or choose a different question."
+    except Exception as exc:
+        answer = (
+            "The operations agent could not answer that question right now. "
+            "Please try again.\n\n"
+            f"Error: {exc}"
+        )
     st.session_state.agent_messages.append({"role": "assistant", "content": answer})
     st.rerun()
 
 
 def render_agent_tab() -> None:
     st.title("🤖 Renewable Operations Agent")
-    st.caption("Ask questions about turbine performance, DAM prices and RFNBO compliance.")
+    st.caption(
+        "Ask natural-language questions about turbine telemetry, DAM prices "
+        "and RFNBO compliance."
+    )
 
     quick_questions = [
         "What is the average DAM price?",
+        "What is the total power output of all turbines?",
         "What is the capacity factor of T01?",
-        "What is the capacity factor of T05?",
-        "What is the average power output of T01?",
+        "Compare the capacity factor of T01 and T05.",
+        "What was T01's power output on April 1st 2026?",
         "According to the rulebook, what is temporal correlation?",
     ]
 
@@ -170,6 +178,23 @@ def render_agent_tab() -> None:
     user_question = st.chat_input("Ask a question about operations, prices or compliance")
     if user_question:
         submit_agent_question(user_question)
+
+    with st.expander("How the Operations Agent Works", expanded=False):
+        st.markdown(
+            """
+            **Structured data questions** are answered using the Part A
+            SQLite database through a read-only SQL query tool.
+
+            **Derived metrics** such as capacity factor are calculated with
+            deterministic Python formulas.
+
+            **Compliance questions** are answered from the supplied RFNBO
+            compliance rulebook.
+
+            The LangChain agent decides which tool or combination of tools
+            is appropriate for each question.
+            """
+        )
 
     with st.expander("Data Quality & Preprocessing", expanded=False):
         st.markdown(
@@ -205,7 +230,10 @@ def render_forecast_metrics() -> None:
 
 def render_forecast_tab() -> None:
     st.title("📈 Future Renewable Generation Forecast")
-    st.caption("Prediction for 30 May 2026")
+    st.caption(
+        "Next-day forecast based on the latest available historical telemetry. "
+        "Prediction for 30 May 2026."
+    )
 
     try:
         forecast_result = forecast_next_day()
