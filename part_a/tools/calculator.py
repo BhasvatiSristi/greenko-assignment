@@ -1,4 +1,5 @@
 from langchain_core.tools import tool
+from data_query import get_dam_prices_for_window
 
 
 # ---------------------------------------------------------
@@ -34,64 +35,33 @@ def calculate_capacity_factor(
         f"Capacity factor percentage: {percentage:.2f}%"
     )
 
-
 # ---------------------------------------------------------
-# Percentage Improvement
-# ---------------------------------------------------------
-
-@tool
-def calculate_percentage_improvement(
-    baseline_value: float,
-    model_value: float
-) -> str:
-    """
-    Calculate percentage improvement of a model over a baseline.
-
-    Formula:
-
-    (baseline - model) / baseline * 100
-
-    Lower-is-better metrics such as MAE and RMSE can use this.
-    """
-
-    if baseline_value == 0:
-        return "Cannot calculate improvement because baseline is zero."
-
-    improvement = (
-        (baseline_value - model_value)
-        / baseline_value
-        * 100
-    )
-
-    return f"Percentage improvement: {improvement:.2f}%"
-
-
-# ---------------------------------------------------------
-# Percentage Difference
+# Average DAM price in a window
 # ---------------------------------------------------------
 
 @tool
-def calculate_percentage_difference(
-    value_a: float,
-    value_b: float
-) -> str:
+def calculate_average_dam_price(user_query: str) -> str:
     """
-    Calculate the percentage difference between two values.
+    Calculate the average DAM price for the
+    time period specified in the user's question.
     """
 
-    denominator = (abs(value_a) + abs(value_b)) / 2
+    result = get_dam_prices_for_window(user_query)
 
-    if denominator == 0:
-        return "Cannot calculate percentage difference."
+    rows = result["rows"]
 
-    difference = (
-        abs(value_a - value_b)
-        / denominator
-        * 100
+    if not rows:
+        return "No DAM price data found for the requested period."
+
+    prices = [float(row[1]) for row in rows]
+
+    average_price = sum(prices) / len(prices)
+
+    return (
+        f"Average DAM price: {average_price:.3f}\n"
+        f"Period: {result['start_date']} to {result['end_date']}\n"
+        f"Hourly prices used: {len(prices)}"
     )
-
-    return f"Percentage difference: {difference:.2f}%"
-
 
 # ---------------------------------------------------------
 # Temporal Correlation Coverage
@@ -129,7 +99,6 @@ def calculate_correlation_coverage(
 
 CALCULATOR_TOOLS = [
     calculate_capacity_factor,
-    calculate_percentage_improvement,
-    calculate_percentage_difference,
-    calculate_correlation_coverage
+    calculate_correlation_coverage,
+    calculate_average_dam_price
 ]

@@ -5,6 +5,8 @@ from pathlib import Path
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
+from datetime import datetime, timedelta
+import json
 
 import os
 from dotenv import load_dotenv
@@ -204,6 +206,88 @@ Rules:
 
     return clean_sql(response.content)
 
+
+# ---------------------------------------------------------
+# Extract prices in specific window
+# ---------------------------------------------------------
+
+def get_dam_prices_for_window(user_query: str) -> dict:
+    """
+    Extract dates from the user query and retrieve
+    DAM prices for that period.
+    """
+
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """
+Extract the start and end dates from the user's question.
+
+Return ONLY JSON in this format:
+
+{
+    "start_date": "YYYY-MM-DD",
+    "end_date": "YYYY-MM-DD"
+}
+
+Convert any date format used by the user into YYYY-MM-DD.
+If only one date is given, use it for both start_date and end_date.
+"""
+        ),
+        (
+            "human",
+            "{question}"
+        )
+    ])
+
+    chain = prompt | sql_llm
+
+    response = chain.invoke({
+        "question": user_query
+    })
+
+    dates = json.loads(response.content)
+
+    start_date = dates["start_date"]
+    end_date = dates["end_date"]
+
+    # Make end date inclusive
+    end_exclusive = (
+        datetime.strptime(end_date, "%Y-%m-%d")
+        + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+
+    query = """
+        SELECT timestamp, dam_price
+        FROM dam_prices
+        WHERE timestamp >= ?
+          AND timestamp < ?
+        ORDER BY timestamp
+    """
+
+    conn = sqlite3.connect(
+        f"file:{DB_PATH}?mode=ro",
+        uri=True
+    )
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            query,
+            (start_date, end_exclusive)
+        )
+
+        rows = cursor.fetchall()
+
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": rows
+        }
+
+    finally:
+        conn.close()
 
 # ---------------------------------------------------------
 # Main Data Query Tool
