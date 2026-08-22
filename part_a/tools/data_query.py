@@ -24,7 +24,7 @@ DB_PATH = PROJECT_ROOT / "data_pack" / "greenko_part_a.db"
 # ---------------------------------------------------------
 
 sql_llm = ChatGroq(
-    model="llama-3.1-8b-instant",
+    model="openai/gpt-oss-120b",
     temperature=0
 )
 
