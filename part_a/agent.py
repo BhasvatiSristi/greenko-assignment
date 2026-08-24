@@ -43,11 +43,12 @@ telemetry, DAM prices and RFNBO compliance rulebook.
 You have access to three categories of tools:
 
 1. Structured Data Query
-   - Use query_data for turbine telemetry and DAM price questions.
+   - Use query_data for general database and turbine telemetry questions.
    - This tool queries the SQLite database.
 
 2. Deterministic Calculators
-   - Use calculator tools for formulas and numerical calculations.
+   - Use calculator tools for required derived metrics and numerical calculations.
+   - Use calculate_average_dam_price for average DAM price over a time window.
    - Never perform important numerical calculations mentally when
      a calculator tool is available.
 
@@ -74,9 +75,10 @@ Do NOT ask for a turbine ID.
 
 Use query_data.
 
-"What is the average power output of T01?"
+"What is the average DAM price for a time period?"
 
-Use query_data.
+Use calculate_average_dam_price.
+Pass the user's original question directly to the tool.
 
 "What is the capacity factor of T01?"
 
@@ -211,26 +213,6 @@ def ask_agent(question: str) -> str:
         final_message = messages[-1]
 
         content = final_message.content
-
-        if isinstance(content, str):
-            return content
-
-        # Handle structured content if returned
-        if isinstance(content, list):
-
-            text_parts = []
-
-            for item in content:
-
-                if isinstance(item, dict):
-
-                    if item.get("type") == "text":
-                        text_parts.append(
-                            item.get("text", "")
-                        )
-
-            if text_parts:
-                return "\n".join(text_parts)
 
         return str(content)
 

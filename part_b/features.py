@@ -17,12 +17,11 @@ TARGET_COLUMN = "total_power_kw"
 
 def build_fleet_hourly_frame(clean_frame: pd.DataFrame) -> pd.DataFrame:
     frame = clean_frame.copy()
-    frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
 
     fleet_frame = (
         frame.groupby("timestamp", as_index=False)
         .agg(
-            total_power_kw=("power_kw_clean", "sum"),
+            total_power_kw=("power_kw", "sum"),
             mean_wind_speed=("wind_speed_clean", "mean"),
             available_turbines=("availability", "sum"),
         )

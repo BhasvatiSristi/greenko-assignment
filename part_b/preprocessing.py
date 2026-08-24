@@ -7,24 +7,31 @@ import pandas as pd
 from data_loader import CLEAN_TELEMETRY_PATH, load_raw_telemetry
 
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CLEANED_PATH = CLEAN_TELEMETRY_PATH
+
 T05_SCALE_FACTOR = 2.239306387561419
 T05_START = pd.Timestamp("2026-03-26 00:00:00")
 T05_END = pd.Timestamp("2026-04-04 23:00:00")
+
 T03_START = pd.Timestamp("2026-05-04 00:00:00")
 T03_END = pd.Timestamp("2026-05-11 23:00:00")
 
 
 def apply_validated_cleaning(raw_frame: pd.DataFrame) -> pd.DataFrame:
     frame = raw_frame.copy()
+
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+    if frame["timestamp"].isna().any():
+        raise ValueError(
+            f"Invalid timestamps found in {telemetry_path}"
+        )
+
     frame["turbine_id"] = frame["turbine_id"].astype(str).str.upper().str.strip()
+
     frame = frame.sort_values(["timestamp", "turbine_id"]).reset_index(drop=True)
 
     frame["wind_speed_clean"] = frame["wind_speed"]
     frame["power_anomaly_flag"] = 0
-    frame["power_kw_clean"] = frame["power_kw"]
 
     t05_mask = (
         (frame["turbine_id"] == "T05")

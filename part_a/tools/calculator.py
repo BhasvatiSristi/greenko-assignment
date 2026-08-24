@@ -1,5 +1,5 @@
 from langchain_core.tools import tool
-from data_query import get_dam_prices_for_window
+from .data_query import get_dam_prices_for_window
 
 
 # ---------------------------------------------------------
@@ -66,6 +66,8 @@ def calculate_average_dam_price(user_query: str) -> str:
 # ---------------------------------------------------------
 # Temporal Correlation Coverage
 # ---------------------------------------------------------
+
+# we dont have the consumption data so we cant get the correlation related features
 
 @tool
 def calculate_correlation_coverage(

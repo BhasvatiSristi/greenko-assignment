@@ -39,7 +39,7 @@ def load_rulebook():
 
     paragraphs = [
         paragraph.text.strip()
-        for paragraph in document.paragraphs
+        for paragraph in document.paragraphs # has all the para data
         if paragraph.text.strip()
     ]
 

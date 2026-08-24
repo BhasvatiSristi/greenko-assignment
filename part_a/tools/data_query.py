@@ -8,7 +8,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime, timedelta
 import json
 
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,11 +21,11 @@ DB_PATH = PROJECT_ROOT / "data_pack" / "greenko_part_a.db"
 
 
 # ---------------------------------------------------------
-# LLM used only for SQL generation
+# LLM used for SQL generation
 # ---------------------------------------------------------
 
 sql_llm = ChatGroq(
-    model="openai/gpt-oss-120b",
+    model="openai/gpt-oss-120b",  # High-capability agentic reasoning; Tool Use; 131K context window; and fast inference (~500 TPS).
     temperature=0
 )
 
@@ -39,14 +38,14 @@ def get_database_schema():
 
     conn = sqlite3.connect(DB_PATH)
 
-    cursor = conn.cursor()
+    cursor = conn.cursor() # cursor allows Python to execute SQL commands
 
     tables = cursor.execute("""
         SELECT name
         FROM sqlite_master
         WHERE type='table'
         AND name NOT LIKE 'sqlite_%'
-    """).fetchall()
+    """).fetchall()   #list of tuples
 
     schema_parts = []
 
@@ -75,32 +74,6 @@ def get_database_schema():
 
     return "\n\n".join(schema_parts)
 
-def clean_sql(sql: str) -> str:
-    """Remove markdown code fences accidentally added by the LLM."""
-    
-    sql = sql.strip()
-
-    sql = re.sub(
-        r"^```sql\s*",
-        "",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    sql = re.sub(
-        r"^```\s*",
-        "",
-        sql
-    )
-
-    sql = re.sub(
-        r"\s*```$",
-        "",
-        sql
-    )
-
-    return sql.strip()
-
 # ---------------------------------------------------------
 # Execute read-only SQL
 # ---------------------------------------------------------
@@ -120,7 +93,7 @@ def execute_sql(sql):
 
 
     conn = sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro",
+        f"file:{DB_PATH}?mode=ro", # open in read-only mode
         uri=True
     )
 
@@ -204,7 +177,7 @@ Rules:
         "question": user_query
     })
 
-    return clean_sql(response.content)
+    return response.content
 
 
 # ---------------------------------------------------------
@@ -218,27 +191,35 @@ def get_dam_prices_for_window(user_query: str) -> dict:
     """
 
     prompt = ChatPromptTemplate.from_messages([
-        (
-            "system",
-            """
-Extract the start and end dates from the user's question.
+    (
+        "system",
+        """
+        Extract the start and end dates from the user's question.
 
-Return ONLY JSON in this format:
+        Return ONLY JSON in this format:
 
-{
-    "start_date": "YYYY-MM-DD",
-    "end_date": "YYYY-MM-DD"
-}
+        {{
+            "start_date": "YYYY-MM-DD",
+            "end_date": "YYYY-MM-DD"
+        }}
 
-Convert any date format used by the user into YYYY-MM-DD.
-If only one date is given, use it for both start_date and end_date.
-"""
-        ),
-        (
-            "human",
-            "{question}"
-        )
-    ])
+        Convert any date format used by the user into YYYY-MM-DD.
+
+        If only one date is given, use that date for both
+        start_date and end_date.
+
+        If no date is given, use:
+        start_date = 2026-03-01
+        end_date = 2026-03-14
+
+        Do not return any explanation or markdown. Return ONLY valid JSON.
+        """
+            ),
+            (
+                "human",
+                "{question}"
+            )
+        ])
 
     chain = prompt | sql_llm
 
@@ -258,7 +239,7 @@ If only one date is given, use it for both start_date and end_date.
     ).strftime("%Y-%m-%d")
 
     query = """
-        SELECT timestamp, dam_price
+        SELECT timestamp, dam_price_inr_per_kwh
         FROM dam_prices
         WHERE timestamp >= ?
           AND timestamp < ?

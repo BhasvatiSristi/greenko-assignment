@@ -1,7 +1,4 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -10,145 +7,222 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from models import fit_gradient_boosting, make_persistence_prediction
 
 
-@dataclass(frozen=True)
+@dataclass
 class ValidationResult:
     predictions: pd.DataFrame
     fold_metrics: pd.DataFrame
     overall_metrics: pd.DataFrame
 
 
-def mape(y_true, y_pred) -> float:
-    y_true_array = np.asarray(y_true, dtype=float)
-    y_pred_array = np.asarray(y_pred, dtype=float)
-    denominator = np.abs(y_true_array)
-    mask = denominator != 0
-    if not mask.any():
-        return float("nan")
-    return float(
-        np.mean(np.abs((y_true_array[mask] - y_pred_array[mask]) / denominator[mask])) * 100
-    )
+def calculate_metrics(y_true, y_pred):
+    """Calculate MAE, RMSE, MAPE and sMAPE."""
 
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
 
-def smape(y_true, y_pred) -> float:
-    y_true_array = np.asarray(y_true, dtype=float)
-    y_pred_array = np.asarray(y_pred, dtype=float)
-    denominator = np.abs(y_true_array) + np.abs(y_pred_array)
-    mask = denominator != 0
-    if not mask.any():
-        return float("nan")
-    return float(
-        np.mean(2 * np.abs(y_pred_array[mask] - y_true_array[mask]) / denominator[mask]) * 100
-    )
+    # Ignore zero actual values for percentage-based metrics.
+    non_zero = y_true != 0
 
+    if non_zero.any():
+        mape = np.mean(
+            np.abs(
+                (y_true[non_zero] - y_pred[non_zero])
+                / y_true[non_zero]
+            )
+        ) * 100
 
-def regression_metrics(y_true, y_pred) -> dict[str, float]:
+        smape = np.mean(
+            2 * np.abs(y_pred[non_zero] - y_true[non_zero])
+            / (
+                np.abs(y_true[non_zero])
+                + np.abs(y_pred[non_zero])
+            )
+        ) * 100
+    else:
+        mape = np.nan
+        smape = np.nan
+
     return {
-        "MAE": float(mean_absolute_error(y_true, y_pred)),
-        "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-        "MAPE": float(mape(y_true, y_pred)),
-        "sMAPE": float(smape(y_true, y_pred)),
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
+        "MAPE": mape,
+        "sMAPE": smape,
     }
 
 
-def _build_folds(
-    forecast_frame: pd.DataFrame,
-    evaluation_days: int = 28,
-    fold_days: int = 7,
-) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    evaluation_end = forecast_frame["timestamp"].max()
-    evaluation_start = evaluation_end.floor("D") - pd.Timedelta(days=evaluation_days - 1)
+def build_folds(
+    forecast_frame,
+    evaluation_days=28,
+    fold_days=7,
+):
+    """
+    Create 7-day test folds from the final 28 days.
+    """
 
-    folds: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    evaluation_end = forecast_frame["timestamp"].max()
+
+    evaluation_start = (
+        evaluation_end.floor("D")
+        - pd.Timedelta(days=evaluation_days - 1)
+    )
+
+    folds = []
+
     fold_start = evaluation_start
+
     while fold_start <= evaluation_end:
+
         fold_end = min(
-            fold_start + pd.Timedelta(days=fold_days) - pd.Timedelta(hours=1),
+            fold_start
+            + pd.Timedelta(days=fold_days)
+            - pd.Timedelta(hours=1),
             evaluation_end,
         )
+
         folds.append((fold_start, fold_end))
+
         fold_start = fold_end + pd.Timedelta(hours=1)
+
     return folds
 
 
 def run_walk_forward_validation(
-    forecast_frame: pd.DataFrame,
-    feature_columns: list[str],
-    target_column: str = "total_power_kw",
-    baseline_column: str = "lag_24",
-    model_factory: Callable[[], object] = fit_gradient_boosting,
-) -> ValidationResult:
-    folds = _build_folds(forecast_frame)
-    prediction_frames: list[pd.DataFrame] = []
-    fold_summary_rows: list[dict[str, float | int]] = []
+    forecast_frame,
+    feature_columns,
+    target_column="total_power_kw",
+    baseline_column="lag_24",
+):
+    """
+    Train on past data and test on future data
+    using 4 weekly walk-forward folds.
+    """
 
-    for fold_number, (test_start, test_end) in enumerate(folds, start=1):
-        train_mask = forecast_frame["timestamp"] < test_start
-        test_mask = (forecast_frame["timestamp"] >= test_start) & (
-            forecast_frame["timestamp"] <= test_end
+    folds = build_folds(forecast_frame)
+
+    all_predictions = []
+    all_fold_metrics = []
+
+    for fold_number, (test_start, test_end) in enumerate(
+        folds, start=1
+    ):
+
+        # Everything before the test period is training data.
+        train_mask = (
+            forecast_frame["timestamp"] < test_start
         )
 
-        train_data = forecast_frame.loc[train_mask].dropna(
-            subset=[target_column, *feature_columns]
+        # Current 7-day period is test data.
+        test_mask = (
+            (forecast_frame["timestamp"] >= test_start)
+            & (forecast_frame["timestamp"] <= test_end)
         )
-        test_data = forecast_frame.loc[test_mask].dropna(
-            subset=[target_column, *feature_columns, baseline_column]
-        ).copy()
+
+        train_data = forecast_frame.loc[
+            train_mask
+        ].dropna(
+            subset=[target_column] + feature_columns
+        )
+
+        test_data = forecast_frame.loc[
+            test_mask
+        ].dropna(
+            subset=[target_column]
+            + feature_columns
+            + [baseline_column]
+        )
 
         if train_data.empty or test_data.empty:
             continue
 
-        model = model_factory(train_data, feature_columns, target_column)
-        model_predictions = model.predict(test_data[feature_columns])
-        persistence_predictions = make_persistence_prediction(test_data, baseline_column)
-
-        fold_predictions = pd.DataFrame(
-            {
-                "timestamp": test_data["timestamp"].values,
-                "actual_power_kw": test_data[target_column].values,
-                "persistence_prediction": persistence_predictions.values,
-                "gradient_boosting_prediction": model_predictions,
-                "fold": fold_number,
-            }
-        )
-        prediction_frames.append(fold_predictions)
-
-        fold_summary_rows.append(
-            {
-                "fold": fold_number,
-                "test_start": test_start,
-                "test_end": test_end,
-                "rows": int(len(test_data)),
-                "persistence_mae": regression_metrics(
-                    test_data[target_column], persistence_predictions
-                )["MAE"],
-                "persistence_rmse": regression_metrics(
-                    test_data[target_column], persistence_predictions
-                )["RMSE"],
-                "gradient_boosting_mae": regression_metrics(
-                    test_data[target_column], model_predictions
-                )["MAE"],
-                "gradient_boosting_rmse": regression_metrics(
-                    test_data[target_column], model_predictions
-                )["RMSE"],
-            }
+        # Train Gradient Boosting only on past data.
+        model = fit_gradient_boosting(
+            train_data,
+            feature_columns,
+            target_column,
         )
 
-    if not prediction_frames:
-        raise ValueError("Walk-forward validation produced no predictions.")
+        # Gradient Boosting predictions.
+        gb_predictions = model.predict(
+            test_data[feature_columns]
+        )
 
-    predictions = pd.concat(prediction_frames, ignore_index=True)
-    fold_metrics = pd.DataFrame(fold_summary_rows)
+        # Simple persistence predictions.
+        persistence_predictions = (
+            make_persistence_prediction(
+                test_data,
+                baseline_column,
+            )
+        )
 
-    overall_metrics = pd.DataFrame(
-        [
-            {"Model": "24-hour Persistence", **regression_metrics(
-                predictions["actual_power_kw"], predictions["persistence_prediction"]
-            )},
-            {"Model": "Gradient Boosting", **regression_metrics(
-                predictions["actual_power_kw"], predictions["gradient_boosting_prediction"]
-            )},
-        ]
+        # Calculate metrics once for each model.
+        persistence_metrics = calculate_metrics(
+            test_data[target_column],
+            persistence_predictions,
+        )
+
+        gb_metrics = calculate_metrics(
+            test_data[target_column],
+            gb_predictions,
+        )
+
+        # Save predictions.
+        fold_predictions = pd.DataFrame({
+            "timestamp": test_data["timestamp"].values,
+            "actual_power_kw": test_data[target_column].values,
+            "persistence_prediction": persistence_predictions.values,
+            "gradient_boosting_prediction": gb_predictions,
+            "fold": fold_number,
+        })
+
+        all_predictions.append(fold_predictions)
+
+        # Save metrics for this fold.
+        all_fold_metrics.append({
+            "fold": fold_number,
+            "test_start": test_start,
+            "test_end": test_end,
+
+            "persistence_mae": persistence_metrics["MAE"],
+            "persistence_rmse": persistence_metrics["RMSE"],
+
+            "gradient_boosting_mae": gb_metrics["MAE"],
+            "gradient_boosting_rmse": gb_metrics["RMSE"],
+        })
+
+    if not all_predictions:
+        raise ValueError(
+            "Walk-forward validation produced no predictions."
+        )
+
+    # Combine predictions from all folds.
+    predictions = pd.concat(
+        all_predictions,
+        ignore_index=True,
     )
+
+    fold_metrics = pd.DataFrame(all_fold_metrics)
+
+    # Calculate final metrics using all test predictions together.
+    persistence_overall = calculate_metrics(
+        predictions["actual_power_kw"],
+        predictions["persistence_prediction"],
+    )
+
+    gb_overall = calculate_metrics(
+        predictions["actual_power_kw"],
+        predictions["gradient_boosting_prediction"],
+    )
+
+    overall_metrics = pd.DataFrame([
+        {
+            "Model": "24-hour Persistence",
+            **persistence_overall,
+        },
+        {
+            "Model": "Gradient Boosting",
+            **gb_overall,
+        },
+    ])
 
     return ValidationResult(
         predictions=predictions,
